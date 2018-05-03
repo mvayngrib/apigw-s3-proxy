@@ -1,0 +1,126 @@
+service: buckettest
+provider:
+  name: aws
+  runtime: nodejs6.10
+  apiKeys:
+    - issue2233WorkaroundKey
+
+  stage: dev
+  profile: mv
+  region: ap-southeast-2
+  variableSyntax: "\\${{([ ~:a-zA-Z0-9._\\'\",\\-\\/\\(\\)]+?)}}"
+
+custom:
+  prefix: ${{self:service}}-${{self:provider.stage}}-
+
+functions:
+  hello:
+    handler: handler.hello
+    events:
+      - http:
+          path: hello
+          method: get
+
+resources:
+  Resources:
+    ApiGatewayRestApi:
+      Type: AWS::ApiGateway::RestApi
+      Properties:
+        Name: ${{self:custom.prefix}}apigw
+        BinaryMediaTypes:
+          - "*/*"
+
+    APIGWResource:
+      # DependsOn:
+      #   - ApiGatewayApiKey1
+      Type: 'AWS::ApiGateway::Resource'
+      Properties:
+        ParentId:
+          Fn::GetAtt: [ApiGatewayRestApi, RootResourceId]
+        RestApiId:
+          Ref: ApiGatewayRestApi
+        PathPart: '{proxy+}'
+
+    S3ProxyRole:
+      Type: 'AWS::IAM::Role'
+      Properties:
+        RoleName: ${{self:custom.prefix}}S3ProxyRole
+        AssumeRolePolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+            - Effect: Allow
+              Principal:
+                Service:
+                  - apigateway.amazonaws.com
+              Action:
+                - sts:AssumeRole
+        Policies:
+          - PolicyName: S3ProxyRole
+            PolicyDocument:
+              Version: "2012-10-17"
+              Statement:
+                - Effect: Allow
+                  Action:
+                    - s3:GetObject
+                  Resource:
+                    - Fn::Join:
+                        - ""
+                        - - Fn::GetAtt: [MyBucket, Arn]
+                          - "public/*"
+
+    ProxyMethod:
+      Type: 'AWS::ApiGateway::Method'
+      Properties:
+        HttpMethod: ANY
+        ResourceId:
+          Ref: APIGWResource
+        RestApiId:
+          Ref: ApiGatewayRestApi
+        AuthorizationType: NONE
+        RequestParameters:
+          method.request.path.proxy: true
+        Integration:
+          Credentials:
+            Fn::GetAtt: [S3ProxyRole, Arn]
+          CacheKeyParameters:
+            - 'method.request.path.proxy'
+          RequestParameters:
+            integration.request.path.proxy: 'method.request.path.proxy'
+          IntegrationHttpMethod: ANY
+          Type: AWS
+          Uri:
+            # e.g. api/dev/info.json will map to {bucket}/public/info.json
+            Fn::Join:
+              - ""
+              - - "arn:aws:apigateway:${{self:provider.region}}:s3:path/"
+                - Ref: MyBucket
+                - "/public/{proxy}"
+
+          PassthroughBehavior: WHEN_NO_MATCH
+          IntegrationResponses:
+            - StatusCode: 200
+              # ResponseTemplates:
+              #   application/json: 'Empty'
+        MethodResponses:
+          - StatusCode: 200
+            ResponseModels:
+              application/json: 'Empty'
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+              method.response.header.Access-Control-Allow-Methods: "'GET,OPTIONS'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+
+          # RequestTemplates:
+          #  application/json: '{"statusCode": 200}'
+
+    MyBucket:
+      Type: "AWS::S3::Bucket"
+
+    # ApiGatewayDeployment0:
+    #   Type: 'AWS::ApiGateway::Deployment'
+    #   Properties:
+    #     RestApiId:
+    #       Ref: ApiGatewayRestApi
+    #     StageName: ${{self:provider.stage}}
+    #   DependsOn:
+    #     - ProxyMethod
