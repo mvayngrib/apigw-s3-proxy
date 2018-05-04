@@ -2,16 +2,14 @@ service: buckettest
 provider:
   name: aws
   runtime: nodejs6.10
-  apiKeys:
-    - issue2233WorkaroundKey
-
   stage: dev
   profile: mv
   region: ap-southeast-2
   variableSyntax: "\\${{([ ~:a-zA-Z0-9._\\'\",\\-\\/\\(\\)]+?)}}"
 
 custom:
-  prefix: ${{self:service}}-${{self:provider.stage}}-
+  basePrefix: ${{self:service}}-${{self:provider.stage}}
+  prefix: ${{self:custom.basePrefix}}-
 
 functions:
   hello:
@@ -26,7 +24,7 @@ resources:
     ApiGatewayRestApi:
       Type: AWS::ApiGateway::RestApi
       Properties:
-        Name: ${{self:custom.prefix}}apigw
+        Name: ${{self:custom.basePrefix}}
         BinaryMediaTypes:
           - "*/*"
 
@@ -66,7 +64,7 @@ resources:
                     - Fn::Join:
                         - ""
                         - - Fn::GetAtt: [MyBucket, Arn]
-                          - "public/*"
+                          - "/public/*"
 
     ProxyMethod:
       Type: 'AWS::ApiGateway::Method'
@@ -86,15 +84,17 @@ resources:
             - 'method.request.path.proxy'
           RequestParameters:
             integration.request.path.proxy: 'method.request.path.proxy'
+            # # trick courtesy of:
+            # # https://stackoverflow.com/questions/39453097/how-to-return-gzipped-content-with-aws-api-gateway
+            # integration.request.header.Accept-Encoding: "'identity'"
           IntegrationHttpMethod: ANY
           Type: AWS
           Uri:
-            # e.g. api/dev/info.json will map to {bucket}/public/info.json
             Fn::Join:
               - ""
               - - "arn:aws:apigateway:${{self:provider.region}}:s3:path/"
                 - Ref: MyBucket
-                - "/public/{proxy}"
+                - "/{proxy}"
 
           PassthroughBehavior: WHEN_NO_MATCH
           IntegrationResponses:
@@ -106,6 +106,7 @@ resources:
                 method.response.header.Access-Control-Allow-Credentials: "'false'"
               ResponseTemplates:
                 application/json: ''
+
         MethodResponses:
           - StatusCode: 200
             ResponseModels:
@@ -115,6 +116,8 @@ resources:
                 method.response.header.Access-Control-Allow-Methods: false
                 method.response.header.Access-Control-Allow-Origin: false
                 method.response.header.Access-Control-Allow-Credentials: false
+          # RequestTemplates:
+          #  application/json: '{"statusCode": 200}'
 
     MyBucket:
       Type: "AWS::S3::Bucket"
